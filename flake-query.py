@@ -62,7 +62,8 @@ def get_flake_metadata(installable: str) -> dict:
     """Get flake-level metadata via `nix flake metadata`."""
     # Flake metadata works on flake refs without the #attr fragment
     flake_ref = installable.split("#")[0] if "#" in installable else installable
-    r = run(["nix", "flake", "metadata", "--json", flake_ref], quiet=True)
+    # --no-write-lock-file for remote flakes that can't modify their lock file
+    r = run(["nix", "flake", "metadata", "--json", "--no-write-lock-file", flake_ref], quiet=True)
     if r.returncode != 0 or not r.stdout.strip():
         return {}
     return parse_json_or_die(r.stdout, "nix flake metadata")
@@ -70,7 +71,7 @@ def get_flake_metadata(installable: str) -> dict:
 
 def get_derivation_show(installable: str) -> dict:
     """Get the derivation details via `nix derivation show`."""
-    r = run(["nix", "derivation", "show", installable], quiet=True)
+    r = run(["nix", "derivation", "show", "--no-write-lock-file", installable], quiet=True)
     if r.returncode != 0 or not r.stdout.strip():
         return {}
     return parse_json_or_die(r.stdout, "nix derivation show")
@@ -78,7 +79,7 @@ def get_derivation_show(installable: str) -> dict:
 
 def get_build_dry_run(installable: str) -> tuple[list[dict], str]:
     """Dry-run build to see what would be fetched/built. Returns (json, stderr_hints)."""
-    r = run(["nix", "build", "--dry-run", "--json", installable], check=False, quiet=True)
+    r = run(["nix", "build", "--dry-run", "--json", "--no-write-lock-file", installable], check=False, quiet=True)}
     builds = parse_json_or_die(r.stdout, "nix build --dry-run --json") if r.stdout.strip() else []
     hints = r.stderr.strip()
     return builds, hints
@@ -89,6 +90,7 @@ def get_path_info_recursive(installable: str) -> dict:
     r = run([
         "nix", "path-info", "--recursive", "--json",
         "--closure-size", "--size", "--json-format", "2",
+        "--no-write-lock-file",
         installable
     ], quiet=True, check=False)
     if r.returncode != 0 or not r.stdout.strip():
@@ -218,7 +220,8 @@ def main():
     header("2. DERIVATION INFO")
 
     # Get the drv path first
-    drv_r = run(["nix", "path-info", "--derivation", "--json", "--json-format", "2"]
+    drv_r = run(["nix", "path-info", "--derivation", "--json", "--json-format", "2",
+                "--no-write-lock-file"]
                 + extra_args + [installable], quiet=True)
     drv_data = {}
     if drv_r.returncode == 0 and drv_r.stdout.strip():

@@ -1,6 +1,8 @@
 {
   description = "flake-query — inspect Nix flake installables for build/closure/cache metadata";
 
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+
   outputs = { self, nixpkgs }:
     let
       forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
