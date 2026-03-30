@@ -79,7 +79,7 @@ def get_derivation_show(installable: str) -> dict:
 
 def get_build_dry_run(installable: str) -> tuple[list[dict], str]:
     """Dry-run build to see what would be fetched/built. Returns (json, stderr_hints)."""
-    r = run(["nix", "build", "--dry-run", "--json", "--no-write-lock-file", installable], check=False, quiet=True)}
+    r = run(["nix", "build", "--dry-run", "--json", "--no-write-lock-file", installable], check=False, quiet=True)
     builds = parse_json_or_die(r.stdout, "nix build --dry-run --json") if r.stdout.strip() else []
     hints = r.stderr.strip()
     return builds, hints
