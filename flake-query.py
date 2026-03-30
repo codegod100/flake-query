@@ -65,7 +65,7 @@ def get_flake_metadata(installable: str) -> dict:
     # Flake metadata works on flake refs without the #attr fragment
     flake_ref = installable.split("#")[0] if "#" in installable else installable
     # --no-write-lock-file for remote flakes that can't modify their lock file
-    r = run(["nix", "flake", "metadata", "--json", "--no-write-lock-file", flake_ref], quiet=True)
+    r = run(["nix", "flake", "metadata", "--json", "--no-write-lock-file", flake_ref], quiet=True, check=False)
     if r.returncode != 0 or not r.stdout.strip():
         return {}
     return parse_json_or_die(r.stdout, "nix flake metadata")
@@ -73,7 +73,7 @@ def get_flake_metadata(installable: str) -> dict:
 
 def get_derivation_show(installable: str) -> dict:
     """Get the derivation details via `nix derivation show`."""
-    r = run(["nix", "derivation", "show", "--no-write-lock-file", installable], quiet=True)
+    r = run(["nix", "derivation", "show", "--no-write-lock-file", installable], quiet=True, check=False)
     if r.returncode != 0 or not r.stdout.strip():
         return {}
     return parse_json_or_die(r.stdout, "nix derivation show")
@@ -105,7 +105,7 @@ def get_flake_source_files(installable: str) -> list[dict] | None:
     flake_ref = installable.split("#")[0] if "#" in installable else installable
     with tempfile.TemporaryDirectory(prefix="flake-query-") as tmpdir:
         r = run(["nix", "flake", "clone", "--no-write-lock-file", flake_ref,
-                 "--dest", tmpdir], check=False, quiet=True)
+                 "--dest", tmpdir], quiet=True, check=False)
         if r.returncode != 0:
             return None
         files = []
@@ -125,7 +125,7 @@ def get_flake_outputs(installable: str) -> dict:
     """Get flake outputs via `nix flake show --json`."""
     flake_ref = installable.split("#")[0] if "#" in installable else installable
     r = run(["nix", "flake", "show", "--json", "--no-write-lock-file", flake_ref],
-            check=False, quiet=True)
+            quiet=True, check=False)
     if r.returncode != 0 or not r.stdout.strip():
         return {}
     return parse_json_or_die(r.stdout, "nix flake show --json")
@@ -340,7 +340,7 @@ def main():
     # Get the drv path first
     drv_r = run(["nix", "path-info", "--derivation", "--json", "--json-format", "2",
                 "--no-write-lock-file"]
-                + extra_args + [installable], quiet=True)
+                + extra_args + [installable], quiet=True, check=False)
     drv_data = {}
     if drv_r.returncode == 0 and drv_r.stdout.strip():
         drv_data = parse_json_or_die(drv_r.stdout, "nix path-info --derivation")
