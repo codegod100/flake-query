@@ -20,6 +20,8 @@ import subprocess
 import sys
 import argparse
 import re
+import os
+import tempfile
 from datetime import datetime
 
 
@@ -96,6 +98,37 @@ def get_path_info_recursive(installable: str) -> dict:
     if r.returncode != 0 or not r.stdout.strip():
         return {}
     return parse_json_or_die(r.stdout, "nix path-info --recursive --json")
+
+
+def get_flake_source_files(installable: str) -> list[dict] | None:
+    """Clone the flake source to a temp dir and list its files."""
+    flake_ref = installable.split("#")[0] if "#" in installable else installable
+    with tempfile.TemporaryDirectory(prefix="flake-query-") as tmpdir:
+        r = run(["nix", "flake", "clone", "--no-write-lock-file", flake_ref,
+                 "--dest", tmpdir], check=False, quiet=True)
+        if r.returncode != 0:
+            return None
+        files = []
+        for root, dirs, filenames in os.walk(tmpdir):
+            # Skip .git
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for f in filenames:
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, tmpdir)
+                size = os.path.getsize(full)
+                files.append({"path": rel, "size": size})
+        files.sort(key=lambda x: x["path"])
+        return files
+
+
+def get_flake_outputs(installable: str) -> dict:
+    """Get flake outputs via `nix flake show --json`."""
+    flake_ref = installable.split("#")[0] if "#" in installable else installable
+    r = run(["nix", "flake", "show", "--json", "--no-write-lock-file", flake_ref],
+            check=False, quiet=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        return {}
+    return parse_json_or_die(r.stdout, "nix flake show --json")
 
 
 # ─── phase 2: substituter checking ────────────────────────────────────────────
@@ -216,8 +249,93 @@ def main():
     else:
         print("    (no flake metadata available — not a flake reference?)")
 
-    # ── Phase 2: Derivation info ──────────────────────────────────────────
-    header("2. DERIVATION INFO")
+    # ── Phase 2: Source files ────────────────────────────────────────────
+    header("2. SOURCE FILES")
+
+    source_files = get_flake_source_files(installable)
+    if source_files:
+        total_src_size = sum(f["size"] for f in source_files)
+        kv("Files", str(len(source_files)))
+        kv("Total size", human_bytes(total_src_size))
+
+        # Build a tree-like listing
+        subheader("File listing")
+        # Determine if we should use a tree or flat list
+        if len(source_files) <= 80:
+            # Tree display
+            tree = {}
+            for f in source_files:
+                parts = f["path"].split(os.sep)
+                node = tree
+                for p in parts[:-1]:
+                    node = node.setdefault(p + "/", {})
+                node[parts[-1]] = f["size"]
+
+            def print_tree(node, prefix="    "):
+                items = sorted(node.items(), key=lambda x: (not isinstance(x[1], dict), x[0]))
+                for i, (name, val) in enumerate(items):
+                    last = i == len(items) - 1
+                    connector = "└── " if last else "├── "
+                    if isinstance(val, dict):
+                        print(f"{prefix}{connector}{GREEN}{name}{RESET}")
+                        extension = "    " if last else "│   "
+                        print_tree(val, prefix + extension)
+                    else:
+                        size_str = human_bytes(val) if val else ""
+                        print(f"{prefix}{connector}{name}  {DIM}{size_str}{RESET}")
+
+            print_tree(tree)
+        else:
+            # Flat list for many files
+            for f in source_files[:50]:
+                print(f"    {f['path']}  {DIM}{human_bytes(f['size'])}{RESET}")
+            if len(source_files) > 50:
+                print(f"    {DIM}... and {len(source_files) - 50} more{RESET}")
+    else:
+        print("    (could not list source files)")
+
+    # ── Phase 3: Flake outputs ────────────────────────────────────────────
+    header("3. FLAKE OUTPUTS")
+
+    flake_outputs = get_flake_outputs(installable)
+    if flake_outputs:
+        inventory = flake_outputs.get("inventory", {})
+        if inventory:
+            for output_type, output_data in inventory.items():
+                doc = output_data.get("doc", "")
+                if doc:
+                    # First line of doc
+                    doc_line = doc.strip().split("\n")[0]
+                    print(f"    {BOLD}{output_type}{RESET}  {DIM}{doc_line}{RESET}")
+                else:
+                    print(f"    {BOLD}{output_type}{RESET}")
+
+                children = output_data.get("output", {}).get("children", {})
+                for system, sys_data in sorted(children.items()):
+                    if isinstance(sys_data, dict) and "children" in sys_data:
+                        sys_children = sys_data["children"]
+                        for attr, attr_data in sorted(sys_children.items()):
+                            if isinstance(attr_data, dict):
+                                what = attr_data.get("what", "?")
+                                drv_name = attr_data.get("derivation", {}).get("name", "")
+                                desc = attr_data.get("shortDescription", "")
+                                systems = attr_data.get("forSystems", [])
+                                sys_str = ", ".join(systems) if systems else system
+                                label = f"{system}.{attr}"
+                                name_str = f" ({drv_name})" if drv_name else ""
+                                desc_str = f" — {desc}" if desc else ""
+                                print(f"      {CYAN}{label}{RESET}  {DIM}{what}{name_str}{desc_str}{RESET}")
+                    elif isinstance(sys_data, dict) and sys_data.get("filtered"):
+                        pass  # omit filtered systems
+        else:
+            # Fallback: show raw JSON keys
+            for key in sorted(flake_outputs.keys()):
+                print(f"    {key}")
+    else:
+        print("    (could not determine flake outputs)")
+
+    # ── Phase 4: Derivation info ──────────────────────────────────────────
+    header("4. DERIVATION INFO")
 
     # Get the drv path first
     drv_r = run(["nix", "path-info", "--derivation", "--json", "--json-format", "2",
@@ -302,7 +420,7 @@ def main():
                     kv(label, f"{count} packages")
 
     # ── Phase 3: Build plan (dry run) ─────────────────────────────────────
-    header("3. BUILD PLAN (dry run)")
+    header("5. BUILD PLAN (dry run)")
 
     builds, hints = get_build_dry_run(installable)
     if builds:
@@ -326,7 +444,7 @@ def main():
                 print(f"    {DIM}{line.strip()}{RESET}")
 
     # ── Phase 4: Closure analysis ─────────────────────────────────────────
-    header("4. CLOSURE ANALYSIS")
+    header("6. CLOSURE ANALYSIS")
 
     path_info = get_path_info_recursive(installable)
     if not path_info:
@@ -392,7 +510,7 @@ def main():
             print(f"    {DIM}... and {len(packages) - 30} more{RESET}")
 
     # ── Phase 5: Substituter analysis ─────────────────────────────────────
-    header("5. SUBSTITUTER / CACHE ANALYSIS")
+    header("7. SUBSTITUTER / CACHE ANALYSIS")
 
     substituters = get_configured_substituters()
     # Deduplicate (trailing slash variants)
@@ -455,7 +573,7 @@ def main():
         print("    (skipped — use without --no-cache-check to check)")
 
     # ── Phase 6: Summary ──────────────────────────────────────────────────
-    header("6. SUMMARY")
+    header("8. SUMMARY")
 
     # Gather summary info from what we collected
     env = {}
